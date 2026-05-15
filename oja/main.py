@@ -35,6 +35,8 @@ def main():
     #print("\n\n\n--------------------------\n\n\n")
 
 
+    # oja's weights should aproximate the principal component of the dataset
+    # we will compare with the results from the pc_demo
     compare_with_pc_demo(perceptron, numeric_data)
 
 
