@@ -2,87 +2,79 @@ from math import exp
 
 import numpy as np
 
-from kohonen.cords import Cords
-
-
-class Neuron:
-    def __init__(self, n_inputs: int, cords: Cords, weights: np.ndarray = None):
-        self.n_inputs = n_inputs
-        self.weights = weights if weights is not None else np.random.rand(n_inputs)
-        self.cords = cords
-
-
-    def update_weights(self, input_vector: np.ndarray, neighbourhood_function_value: float, learning_rate: float):
-        new_weights = self.weights + neighbourhood_function_value * learning_rate * (input_vector - self.weights)
-        self.weights = new_weights
-
-
-
+from kohonen.Coordinates import Coordinates
+from kohonen.Grid import Grid, make_grid
 
 
 class KohonenMap:
-    def __init__(self, n_inputs: int, grid_size: int, init_learning_rate: float = 0.5,
-                 init_radius: float = 0, dataset: np.ndarray = None, lr_decay: int = 10000):
-        self.inputs = np.zeros(n_inputs, dtype=float)
-        self.grid = []
+    def __init__(
+        self,
+        n_inputs: int,
+        grid_size: int,
+        radius_decay: int, # convention is epochs / 2
+        lr_decay: int,      # convention is epochs * 10
+        grid_type: str = "square",
+        init_learning_rate: float = 0.5,
+        init_radius: float = 0,
+        dataset: np.ndarray = None,
+    ):
+        self.init_radius = init_radius if init_radius != 0 else float(grid_size)
+        self.radius = self.init_radius
+        self.init_learning_rate = init_learning_rate
         self.learning_rate = init_learning_rate
-        self.radius = init_radius if init_radius != 0 else grid_size
+
+        self.radius_decay = radius_decay
         self.lr_decay = lr_decay
 
-        for i in range(grid_size):
-            self.grid.append([])
-            for j in range(grid_size):
+        self.grid: Grid = make_grid(grid_type, grid_size, n_inputs, dataset)
 
-                # Initialize neuron weights with random dataset sample
-                if dataset is not None:
-                    rand_idx = np.random.randint(0, dataset.shape[0])
-                    w = dataset[rand_idx].copy()
-                    self.grid[i].append(Neuron(n_inputs, weights=w, cords=Cords(i, j)))
-                else:
-                    self.grid[i].append(Neuron(n_inputs, cords=Cords(i, j)))
 
-    def get_neuron_at(self, cords: Cords) -> Neuron:
-        return self.grid[cords.x][cords.y]
-
-    def find_winner_cords(self, input_vector: np.ndarray) -> Cords:
-        winner_cords = Cords(0,0)
-        min_dist = float('inf')
-
-        for i in range(len(self.grid)):
-            for j in range(len(self.grid[i])):
-                neuron = self.grid[i][j]
-                # Norm is magnitude of (input - weights) vector, so it gives us distance between input and neuron weights
-                dist = np.linalg.norm(input_vector - neuron.weights)
-                if dist < min_dist:
-                    min_dist = dist
-                    winner_cords.set_cords(i,j)
-
+    def find_winner_cords(self, input_vector: np.ndarray) -> Coordinates:
+        """
+        Returns the coordinates of the best matching unit, using Euclidean distance as
+        medida de similitud *d* (slide 25)
+        """
+        winner_cords = Coordinates(0, 0)
+        min_dist = float("inf")
+        for neuron in self.grid.all_neurons():
+            dist = np.linalg.norm(input_vector - neuron.weights) # <----- here!
+            if dist < min_dist:
+                min_dist = dist
+                winner_cords.set_coordinates(neuron.cords.x, neuron.cords.y)
         return winner_cords
 
-    def update_weights(self, input_vector: np.ndarray, winner_cords: Cords):
-        winner_neuron = self.get_neuron_at(winner_cords)
-        for i in range(len(self.grid)):
-            for j in range(len(self.grid[i])):
-                neuron = self.grid[i][j]
-                neighbourhood_function_value = self.get_distance_to_neuron(neuron.cords, winner_neuron.cords)
-                neuron.update_weights(input_vector, neighbourhood_function_value, self.learning_rate)
+
+    def update_weights(self, input_vector: np.ndarray, winner_cords: Coordinates):
+        """
+        Updates weights after finding BMU for each neuron in its neighborhood.
+
+        There is no hard cutoff like:
+            h(d) =  gaussian_value      if   d <= radius
+                    0                   if   d > radius
 
 
-    def update_learning_rate(self, epoch):
-        self.learning_rate = self.learning_rate * exp(-epoch / self.lr_decay)
+        - The "cutoff" is the threshold: everyone INSIDE THE THRESHOLD receives an update
+        - Threshold symbolizes neuron's influence: those with very low h (h < 1e-4) have little to no influence so they are excluded
+        """
+        for neuron in self.grid.all_neurons():
+            h = self._neighbor_h(neuron.cords, winner_cords)
+            if h > 1e-4:
+                neuron.update_weights(input_vector, h, self.learning_rate)
 
 
-    # In a totally arbitrary , reduce radius by 5%
-    def update_radius(self):
-        self.radius = max(self.radius * 0.95, 1)
+    def _neighbor_h(self, neuron_cords: Coordinates, winner_cords: Coordinates) -> float:
+        """
+        Gaussian neighborhood function: h(d) = exp(-d² / (2 * radius²))
+        :returns:
+            - h in (0,1) for any neuron INSIDE radius, decreases smoothly with distance
+            - h = 1 for BMU
+        """
+        dist = self.grid.distance(neuron_cords, winner_cords)
+        return exp(-(dist ** 2) / (2 * self.radius ** 2))
 
-    # calculate distance using eucledian distance.
-    # this is the neighbourhood function
-    # todo CHECK how to implement using hexagonal grid
-    def get_distance_to_neuron(self, neuron_cords: Cords, winner_cords: Cords) -> float:
-        if neuron_cords.x == winner_cords.x and neuron_cords.y == winner_cords.y:
-            return 1
-        dist = np.sqrt((neuron_cords.x - winner_cords.x) ** 2 + (neuron_cords.y - winner_cords.y) ** 2)
+    def update_learning_rate(self, epoch: int):
+        self.learning_rate = self.init_learning_rate * exp(-epoch / self.lr_decay)
 
-        #dist is always >= 1
-        return 1/dist if dist < self.radius else 0
+
+    def update_radius(self, epoch: int):
+        self.radius = max(self.init_radius * exp(-epoch / self.radius_decay),1.0)
